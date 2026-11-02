@@ -23,10 +23,19 @@ const CHANNELS = (process.env.CHANNELS || '')
     return { label: pair.slice(0, idx).trim(), id: pair.slice(idx + 1).trim() };
   });
 
+// REVIEW_CHANNELS: bot shu kanal(lar)dagi yangi postlarni kuzatib,
+// avtomatik ravishda reklama materiali sifatida admin(lar)ga taklif qiladi.
+// Format: @username1,@username2  (bot shu kanallarga ham admin bo'lishi shart)
+const REVIEW_CHANNELS = (process.env.REVIEW_CHANNELS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 if (!BOT_TOKEN) throw new Error('BOT_TOKEN topilmadi (.env yoki Railway Variables)');
 if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY topilmadi');
 if (CHANNELS.length === 0) throw new Error('CHANNELS topilmadi. Masalan: "Asosiy:@kanal1,Otzivlar:@kanal2"');
 if (ADMIN_IDS.length === 0) console.warn('OGOHLANTIRISH: ADMIN_IDS bo\'sh — hech kim botdan foydalana olmaydi.');
+if (REVIEW_CHANNELS.length === 0) console.warn('Eslatma: REVIEW_CHANNELS berilmagan — otziv kanallarini avtomatik kuzatish o\'chirilgan.');
 
 const bot = new Telegraf(BOT_TOKEN);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
@@ -35,9 +44,23 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 // userId -> { text, photoFileId, selected: Set<number> (CHANNELS indexlari) }
 const pendingPosts = new Map();
 
+// Otziv kanalidan kelib, hali ishlatish/rad etish kutilayotgan materiallar
+// shortId -> { text, photoFileId, sourceLabel }
+const reviewStore = new Map();
+let reviewCounter = 0;
+
 function isAdmin(ctx) {
   const id = String(ctx.from?.id || '');
   return ADMIN_IDS.includes(id);
+}
+
+function isReviewChannel(chat) {
+  const uname = chat.username ? chat.username.toLowerCase() : null;
+  const id = String(chat.id);
+  return REVIEW_CHANNELS.some((v) => {
+    const vv = v.replace(/^@/, '').toLowerCase();
+    return vv === uname || v === id;
+  });
 }
 
 const SYSTEM_PROMPT = `Sen professional marketolog va copywriter'san. Vazifang — o'zbek tilidagi ta'lim kursi (Milliy Sertifikat, Attestatsiya, Ona tili va adabiyot tayyorgarligi) uchun Telegram kanalida e'lon qilinadigan reklama posti yozish.
@@ -85,14 +108,76 @@ function channelButtonKeyboard() {
   ]);
 }
 
-// ---------- Middleware: faqat adminlar ----------
+// ---------- Middleware: faqat adminlar (kanal postlari bundan mustasno) ----------
 bot.use((ctx, next) => {
+  if (ctx.updateType === 'channel_post' || ctx.updateType === 'edited_channel_post') {
+    // Bular pastda alohida, o'z kanal ro'yxati bilan tekshiriladi
+    return next();
+  }
   if (!ctx.from) return;
   if (!isAdmin(ctx)) {
     // Admin bo'lmagan foydalanuvchilarga jim javob qaytarmaymiz
     return;
   }
   return next();
+});
+
+// ---------- Otziv kanallarini kuzatish ----------
+bot.on('channel_post', async (ctx) => {
+  const post = ctx.channelPost;
+  const chat = post.chat;
+  if (!isReviewChannel(chat)) return; // faqat REVIEW_CHANNELS'dagi postlarga reaksiya
+
+  const text = post.text || post.caption || '';
+  const photoFileId = post.photo ? post.photo[post.photo.length - 1].file_id : null;
+  if (!text && !photoFileId) return;
+
+  const sourceLabel = chat.title || chat.username || 'Otziv kanali';
+  const id = String(++reviewCounter);
+  reviewStore.set(id, { text, photoFileId, sourceLabel });
+
+  const preview = text ? (text.length > 500 ? text.slice(0, 500) + '…' : text) : '(faqat rasm, matnsiz)';
+  const kb = Markup.inlineKeyboard([
+    [Markup.button.callback('✅ Shu asosda post yasash', `review_use_${id}`)],
+    [Markup.button.callback('❌ E\'tiborsiz qoldirish', `review_ignore_${id}`)],
+  ]);
+
+  for (const adminId of ADMIN_IDS) {
+    try {
+      if (photoFileId) {
+        await ctx.telegram.sendPhoto(adminId, photoFileId, {
+          caption: `🆕 Yangi otziv (${sourceLabel}):\n\n${preview}`,
+          ...kb,
+        });
+      } else {
+        await ctx.telegram.sendMessage(adminId, `🆕 Yangi otziv (${sourceLabel}):\n\n${preview}`, kb);
+      }
+    } catch (err) {
+      console.error('Adminga otziv yuborishda xato:', err);
+    }
+  }
+});
+
+bot.action(/review_use_(\S+)/, async (ctx) => {
+  const id = ctx.match[1];
+  const review = reviewStore.get(id);
+  if (!review) {
+    return ctx.answerCbQuery('Bu material eskirgan yoki allaqachon ishlatilgan.', { show_alert: true });
+  }
+  await ctx.answerCbQuery('Post tayyorlanmoqda...');
+  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+  const briefText = review.text
+    ? `Quyidagi otziv/natijaga asoslanib reklama posti yoz:\n\n${review.text}`
+    : "Ilova qilingan otziv/natija skrinshotiga asoslanib reklama posti yozib ber.";
+  await handleBrief(ctx, briefText, review.photoFileId);
+  reviewStore.delete(id);
+});
+
+bot.action(/review_ignore_(\S+)/, async (ctx) => {
+  const id = ctx.match[1];
+  reviewStore.delete(id);
+  await ctx.answerCbQuery('E\'tiborsiz qoldirildi.');
+  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
 });
 
 bot.start((ctx) => {
