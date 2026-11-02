@@ -5,23 +5,35 @@ const OpenAI = require('openai');
 // ---------- Env ----------
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const MAIN_CHANNEL = process.env.MAIN_CHANNEL; // masalan: @NargizaOlimovna_Onatili yoki -100xxxxxxxxxx
 const CONTACT_USERNAME = process.env.CONTACT_USERNAME || 'Filolog_N'; // @ belgisiz
 const ADMIN_IDS = (process.env.ADMIN_IDS || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
 
+// CHANNELS: "Nomi:@username_yoki_-100ID, Nomi2:@username2, ..."
+// Masalan: "Asosiy:@NargizaOlimovna_Onatili,Otzivlar:@Cefr_40_asar"
+const CHANNELS = (process.env.CHANNELS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map((pair) => {
+    const idx = pair.indexOf(':');
+    if (idx === -1) return { label: pair, id: pair };
+    return { label: pair.slice(0, idx).trim(), id: pair.slice(idx + 1).trim() };
+  });
+
 if (!BOT_TOKEN) throw new Error('BOT_TOKEN topilmadi (.env yoki Railway Variables)');
 if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY topilmadi');
-if (!MAIN_CHANNEL) throw new Error('MAIN_CHANNEL topilmadi');
+if (CHANNELS.length === 0) throw new Error('CHANNELS topilmadi. Masalan: "Asosiy:@kanal1,Otzivlar:@kanal2"');
 if (ADMIN_IDS.length === 0) console.warn('OGOHLANTIRISH: ADMIN_IDS bo\'sh — hech kim botdan foydalana olmaydi.');
 
 const bot = new Telegraf(BOT_TOKEN);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 // Har bir admin uchun oxirgi tayyorlangan post (tasdiqlashni kutyapti)
-const pendingPosts = new Map(); // userId -> { text, photoFileId }
+// userId -> { text, photoFileId, selected: Set<number> (CHANNELS indexlari) }
+const pendingPosts = new Map();
 
 function isAdmin(ctx) {
   const id = String(ctx.from?.id || '');
@@ -52,15 +64,22 @@ async function generatePost(userText) {
   return completion.choices[0].message.content.trim();
 }
 
-function previewKeyboard() {
+function previewKeyboard(selected) {
+  const channelRows = CHANNELS.map((ch, i) => [
+    Markup.button.callback(
+      `${selected.has(i) ? '✅' : '⬜'} ${ch.label}`,
+      `toggle_ch_${i}`
+    ),
+  ]);
   return Markup.inlineKeyboard([
-    [Markup.button.callback('✅ Joylash', 'post_approve')],
+    ...channelRows,
+    [Markup.button.callback('📤 Tanlangan kanallarga joylash', 'post_approve')],
     [Markup.button.callback('✏️ Qayta yoz', 'post_regenerate')],
     [Markup.button.callback('❌ Bekor qilish', 'post_cancel')],
   ]);
 }
 
-function channelKeyboard() {
+function channelButtonKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.url('📝 Kursga qo\'shilish', `https://t.me/${CONTACT_USERNAME}`)],
   ]);
@@ -77,8 +96,9 @@ bot.use((ctx, next) => {
 });
 
 bot.start((ctx) => {
+  const list = CHANNELS.map((c) => `• ${c.label}`).join('\n');
   ctx.reply(
-    "Salom! Menga reklama qilinadigan kurs haqida qisqa ma'lumot yozing (kurs nomi, necha o'rin qolgani, otziv bo'lsa — matnini ham qo'shing yoki skrinshot rasm bilan birga yuboring).\n\nMen shu asosda tayyor reklama posti yozib, avval sizga ko'rsataman."
+    `Salom! Menga reklama qilinadigan kurs haqida qisqa ma'lumot yozing (kurs nomi, necha o'rin qolgani, otziv bo'lsa — matnini ham qo'shing yoki skrinshot rasm bilan birga yuboring).\n\nMen shu asosda tayyor reklama posti yozib, avval sizga ko'rsataman. Keyin qaysi kanal(lar)ga joylashni o'zingiz tanlaysiz:\n${list}`
   );
 });
 
@@ -99,15 +119,17 @@ async function handleBrief(ctx, briefText, photoFileId) {
   const waitMsg = await ctx.reply('✍️ Post tayyorlanmoqda...');
   try {
     const generated = await generatePost(briefText);
-    pendingPosts.set(ctx.from.id, { text: generated, photoFileId });
+    // Standart holatda barcha kanallar tanlangan bo'ladi — kerak bo'lmaganini o'chirib qo'yasiz
+    const selected = new Set(CHANNELS.map((_, i) => i));
+    pendingPosts.set(ctx.from.id, { text: generated, photoFileId, selected });
 
     if (photoFileId) {
       await ctx.replyWithPhoto(photoFileId, {
         caption: generated,
-        ...previewKeyboard(),
+        ...previewKeyboard(selected),
       });
     } else {
-      await ctx.reply(generated, previewKeyboard());
+      await ctx.reply(generated, previewKeyboard(selected));
     }
   } catch (err) {
     console.error(err);
@@ -117,27 +139,51 @@ async function handleBrief(ctx, briefText, photoFileId) {
   }
 }
 
+bot.action(/toggle_ch_(\d+)/, async (ctx) => {
+  const pending = pendingPosts.get(ctx.from.id);
+  if (!pending) {
+    return ctx.answerCbQuery('Tayyor post topilmadi. Avval yangi brief yuboring.');
+  }
+  const i = Number(ctx.match[1]);
+  if (pending.selected.has(i)) {
+    pending.selected.delete(i);
+  } else {
+    pending.selected.add(i);
+  }
+  await ctx.answerCbQuery();
+  await ctx.editMessageReplyMarkup(previewKeyboard(pending.selected).reply_markup).catch(() => {});
+});
+
 bot.action('post_approve', async (ctx) => {
   const pending = pendingPosts.get(ctx.from.id);
   if (!pending) {
     return ctx.answerCbQuery('Tayyor post topilmadi. Avval yangi brief yuboring.');
   }
-  try {
-    if (pending.photoFileId) {
-      await ctx.telegram.sendPhoto(MAIN_CHANNEL, pending.photoFileId, {
-        caption: pending.text,
-        ...channelKeyboard(),
-      });
-    } else {
-      await ctx.telegram.sendMessage(MAIN_CHANNEL, pending.text, channelKeyboard());
-    }
-    pendingPosts.delete(ctx.from.id);
-    await ctx.answerCbQuery('✅ Kanalga joylandi!');
-    await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  } catch (err) {
-    console.error(err);
-    await ctx.answerCbQuery('❌ Joylashda xatolik: ' + (err.message || ''), { show_alert: true });
+  if (pending.selected.size === 0) {
+    return ctx.answerCbQuery('Kamida bitta kanal tanlang.', { show_alert: true });
   }
+  const targets = CHANNELS.filter((_, i) => pending.selected.has(i));
+  const results = [];
+  for (const ch of targets) {
+    try {
+      if (pending.photoFileId) {
+        await ctx.telegram.sendPhoto(ch.id, pending.photoFileId, {
+          caption: pending.text,
+          ...channelButtonKeyboard(),
+        });
+      } else {
+        await ctx.telegram.sendMessage(ch.id, pending.text, channelButtonKeyboard());
+      }
+      results.push(`✅ ${ch.label}`);
+    } catch (err) {
+      console.error(`${ch.label} ga joylashda xato:`, err);
+      results.push(`❌ ${ch.label}: ${err.message || 'xato'}`);
+    }
+  }
+  pendingPosts.delete(ctx.from.id);
+  await ctx.answerCbQuery('Joylandi!');
+  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+  await ctx.reply(results.join('\n'));
 });
 
 bot.action('post_regenerate', async (ctx) => {
