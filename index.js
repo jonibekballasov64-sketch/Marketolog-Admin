@@ -310,6 +310,20 @@ bot.action('sconfirm', async (ctx) => {
   await ctx.reply(results.join('\n'), mainMenuKeyboard());
 });
 
+// ---------- Albom: "/tayyor" buyrug'i (rasmlarni yuborishni tugatish) ----------
+// Alohida bot.command sifatida ro'yxatdan o'tkazilgan, chunki pastdagi umumiy
+// matn ishlovchisi "/" bilan boshlangan har qanday xabarni o'tkazib yuboradi.
+bot.command('tayyor', async (ctx) => {
+  const state = creationState.get(ctx.from.id);
+  if (!state || state.step !== 'album_media') return; // boshqa bosqichda e'tibor bermaymiz
+  if (!state.media || state.media.length === 0) {
+    await ctx.reply('Hali birorta rasm yubormadingiz. Avval kamida bitta rasm yuboring.');
+    return;
+  }
+  state.step = 'caption';
+  await ctx.reply(`✅ ${state.media.length} ta rasm qabul qilindi. Endi post matnini yuboring:`);
+});
+
 // ---------- Matn xabarlar: oqim bosqichiga qarab yo'naltiriladi ----------
 bot.on('text', async (ctx) => {
   const text = ctx.message.text;
@@ -335,16 +349,6 @@ bot.on('text', async (ctx) => {
       state.step = 'media';
       await ctx.reply(state.type === 'video' ? 'Videoni yuboring:' : 'Rasmni yuboring:');
     }
-    return;
-  }
-
-  if (state.step === 'album_media' && text.trim() === '/tayyor') {
-    if (!state.media || state.media.length === 0) {
-      await ctx.reply("Hali birorta rasm yubormadingiz. Avval kamida bitta rasm yuboring.");
-      return;
-    }
-    state.step = 'caption';
-    await ctx.reply(`✅ ${state.media.length} ta rasm qabul qilindi. Endi post matnini yuboring:`);
     return;
   }
 
