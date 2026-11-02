@@ -72,8 +72,10 @@ ENG MUHIM QOIDA — HECH QACHON BUZMA:
 - Agar otziv matni/skrinshoti berilgan bo'lsa, undagi ism yoki natijani o'zgartirmasdan, aynan o'sha holicha ishlat.
 
 FORMAT — Telegram HTML belgilaridan foydalan:
-- Faqat shu teglardan foydalanish mumkin: <b>...</b> (qalin). Boshqa HTML teg ishlatma, markdown yulduzcha (**...**) ishlatma.
+- Faqat shu teglardan foydalanish mumkin: <b>...</b> (qalin), <i>...</i> (qiya/kursiv), <blockquote>...</blockquote> (iqtibos qutisi). Boshqa HTML teg ishlatma, markdown belgilarini (yulduzcha **, pastki chiziq __, uch marta qo'shtirnoq) hech qachon ishlatma — faqat shu HTML teglar.
 - Muhim raqam, foyda yoki chaqiriqni <b>...</b> bilan ajrat (masalan: <b>Faqat shu hafta!</b>).
+- Agar berilgan ma'lumotda haqiqiy otziv matni bo'lsa, uni <blockquote>...</blockquote> ichiga aynan o'sha holicha (o'zgartirmasdan) joylashtir — bu iqtibos sifatida alohida ajralib turadi.
+- Nozik urg'u yoki uslubiy jumla uchun <i>...</i> dan foydalanish mumkin (lekin me'yorida, haddan tashqari ko'p emas).
 - Afzalliklar ro'yxati uchun har bir qatorni "✓ " bilan boshla (checkmark + bo'sh joy), har biri alohida qatorda.
 - Matn boshida diqqatni tortadigan sarlavha/birinchi qator bo'lsin.
 - Agar berilgan ma'lumotda otziv/natija bo'lsa, qisqa iqtibos sifatida tabiiy kiritib ber (faqat berilgan otzivni, o'zingnikini emas).
