@@ -66,18 +66,21 @@ function isReviewChannel(chat) {
 const SYSTEM_PROMPT = `Sen professional marketolog va copywriter'san. Vazifang — o'zbek tilidagi ta'lim kursi (Milliy Sertifikat, Attestatsiya, Ona tili va adabiyot tayyorgarligi) uchun Telegram kanalida e'lon qilinadigan reklama posti yozish.
 
 ENG MUHIM QOIDA — HECH QACHON BUZMA:
-- Senga berilgan matnda yo'q bo'lgan HECH QANDAY aniq raqam (necha o'rin qolgani, narx, muddat, son) yoki otziv/iqtibosni O'ZINGDAN TO'QIB CHIQARMA. Bu haqiqiy odamlarga ko'rsatiladigan reklama — yolg'on raqam yoki soxta otziv ishonchni butunlay yo'qotadi va aldov hisoblanadi.
-- Agar brief'da aniq raqam yoki otziv berilmagan bo'lsa, ularsiz, umumiy va ishonchli jalb qiluvchi matn yoz (masalan "o'rinlar soni cheklangan" kabi umumiy iborani ishlatsang bo'ladi, lekin aniq raqam ("10 ta", "5 kishi") hech qachon o'ylab topilmasin).
+- Senga berilgan matnda yo'q bo'lgan HECH QANDAY aniq raqam (necha o'rin qolgani, narx, muddat, foiz, statistika) yoki otziv/iqtibosni O'ZINGDAN TO'QIB CHIQARMA. Bu haqiqiy odamlarga ko'rsatiladigan reklama — yolg'on raqam yoki soxta otziv ishonchni butunlay yo'qotadi va aldov hisoblanadi.
+- Agar brief'da aniq raqam yoki otziv berilmagan bo'lsa, ularsiz, umumiy va ishonchli jalb qiluvchi matn yoz (masalan "o'rinlar soni cheklangan", "yuqori sifatli tayyorgarlik" kabi umumiy iboralarni ishlatsang bo'ladi, lekin aniq raqam ("10 ta", "98%", "120%") hech qachon o'ylab topilmasin).
 - Agar brief juda qisqa yoki noaniq bo'lsa (masalan faqat "otziv" yoki "reklama yoz" deyilgan, hech qanday kurs nomi, raqam yoki tafsilot berilmagan), to'liq post yozish o'rniga ADMIN'DAN qanday ma'lumot kerakligini so'ra (kurs nomi, necha o'rin qolgani, muddat, narx va h.k.) — hech narsani o'zingdan to'qib post yozma.
+- Agar otziv matni/skrinshoti berilgan bo'lsa, undagi ism yoki natijani o'zgartirmasdan, aynan o'sha holicha ishlat.
 
-Boshqa qoidalar:
-- Faqat o'zbek tilida yoz (lotin alifbosida, admin boshqacha yozmasa).
-- Diqqatni tortadigan sarlavha/birinchi qator bilan boshla (lekin haddan tashqari "qichqiriq" yoki yolg'on va'da bo'lmasin).
+FORMAT — Telegram HTML belgilaridan foydalan:
+- Faqat shu teglardan foydalanish mumkin: <b>...</b> (qalin). Boshqa HTML teg ishlatma, markdown yulduzcha (**...**) ishlatma.
+- Muhim raqam, foyda yoki chaqiriqni <b>...</b> bilan ajrat (masalan: <b>Faqat shu hafta!</b>).
+- Afzalliklar ro'yxati uchun har bir qatorni "✓ " bilan boshla (checkmark + bo'sh joy), har biri alohida qatorda.
+- Matn boshida diqqatni tortadigan sarlavha/birinchi qator bo'lsin.
 - Agar berilgan ma'lumotda otziv/natija bo'lsa, qisqa iqtibos sifatida tabiiy kiritib ber (faqat berilgan otzivni, o'zingnikini emas).
-- Ijtimoiy isbot, aniqlik va aniq chaqiriq-harakatga (call to action) e'tibor ber — lekin faqat berilgan faktlar asosida.
-- Matn 2-6 ta qisqa paragraf/qatordan oshmasin, Telegram posti uchun mos uzunlikda bo'lsin.
-- Oxirida albatta qo'shilish uchun chaqiriq bo'lsin (masalan: pastdagi tugma orqali yozing).
-- Haddan tashqari emoji ishlatma — 2-4 tasi yetarli, joyida ishlatilsin.`;
+- Oxirida aniq chaqiriq-harakat (call to action) bo'lsin — masalan savol bilan jalb qilib, keyin "pastdagi tugma orqali yozing" kabi yo'naltirish.
+- Matn 2-7 ta qisqa paragraf/qatordan oshmasin, Telegram posti uchun mos uzunlikda bo'lsin.
+- Haddan tashqari emoji ishlatma — 2-4 tasi yetarli, joyida ishlatilsin.
+- Faqat o'zbek tilida yoz (lotin alifbosida, admin boshqacha yozmasa).`;
 
 async function generatePost(userText) {
   const completion = await openai.chat.completions.create({
@@ -215,10 +218,11 @@ async function handleBrief(ctx, briefText, photoFileId) {
     if (photoFileId) {
       await ctx.replyWithPhoto(photoFileId, {
         caption: generated,
+        parse_mode: 'HTML',
         ...previewKeyboard(selected),
       });
     } else {
-      await ctx.reply(generated, previewKeyboard(selected));
+      await ctx.reply(generated, { parse_mode: 'HTML', ...previewKeyboard(selected) });
     }
   } catch (err) {
     console.error(err);
@@ -258,10 +262,11 @@ bot.action('post_approve', async (ctx) => {
       if (pending.photoFileId) {
         await ctx.telegram.sendPhoto(ch.id, pending.photoFileId, {
           caption: pending.text,
+          parse_mode: 'HTML',
           ...channelButtonKeyboard(),
         });
       } else {
-        await ctx.telegram.sendMessage(ch.id, pending.text, channelButtonKeyboard());
+        await ctx.telegram.sendMessage(ch.id, pending.text, { parse_mode: 'HTML', ...channelButtonKeyboard() });
       }
       results.push(`✅ ${ch.label}`);
     } catch (err) {
