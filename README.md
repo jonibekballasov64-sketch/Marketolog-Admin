@@ -33,7 +33,7 @@ npm start
 ## Ishlatish
 - Botga shunchaki matn yozing: "Milliy Sertifikat kursi, 5 o'rin qoldi, ... otziv matni ..."
 - Yoki otziv skrinshotini caption bilan yuboring.
-- Bot tayyor postni ko'rsatadi, har bir kanal oldida belgi bilan (✅/⬜) — kerak bo'lmagan kanalni bosib o'chirib qo'yasiz, standart holatda barchasi tanlangan.
+- Bot tayyor postni ko'rsatadi, har bir kanal oldida belgi bilan (✅/⬜) — standart holatda HECH BIRI tanlanmagan, kerakli kanal(lar)ni o'zingiz bosib belgilaysiz.
 - **📤 Tanlangan kanallarga joylash** bossangiz, faqat belgilangan kanallarga chiqadi (pastida "Kursga qo'shilish" tugmasi bilan, @username'ga olib boradi).
 - **✏️ Qayta yoz** — yangi ko'rsatma yozib, qayta so'rang.
 - **❌ Bekor qilish** — hech narsa joylanmaydi.

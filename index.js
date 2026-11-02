@@ -213,8 +213,9 @@ async function handleBrief(ctx, briefText, photoFileId) {
   const waitMsg = await ctx.reply('✍️ Post tayyorlanmoqda...');
   try {
     const generated = await generatePost(briefText);
-    // Standart holatda barcha kanallar tanlangan bo'ladi — kerak bo'lmaganini o'chirib qo'yasiz
-    const selected = new Set(CHANNELS.map((_, i) => i));
+    // Standart holatda HECH BIR kanal tanlanmagan — xato kanalga tasodifan
+    // yuborib qo'ymaslik uchun, kerakli kanal(lar)ni o'zingiz bosib tanlaysiz.
+    const selected = new Set();
     pendingPosts.set(ctx.from.id, { text: generated, photoFileId, selected });
 
     if (photoFileId) {
