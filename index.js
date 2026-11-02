@@ -1,11 +1,9 @@
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
-const OpenAI = require('openai');
-const { generateHeadlineImage } = require('./graphic');
+const { loadPosts, savePosts, genId } = require('./storage');
 
 // ---------- Env ----------
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const CONTACT_USERNAME = process.env.CONTACT_USERNAME || 'Filolog_N'; // @ belgisiz
 const ADMIN_IDS = (process.env.ADMIN_IDS || '')
   .split(',')
@@ -13,7 +11,6 @@ const ADMIN_IDS = (process.env.ADMIN_IDS || '')
   .filter(Boolean);
 
 // CHANNELS: "Nomi:@username_yoki_-100ID, Nomi2:@username2, ..."
-// Masalan: "Asosiy:@NargizaOlimovna_Onatili,Otzivlar:@Cefr_40_asar"
 const CHANNELS = (process.env.CHANNELS || '')
   .split(',')
   .map((s) => s.trim())
@@ -24,110 +21,83 @@ const CHANNELS = (process.env.CHANNELS || '')
     return { label: pair.slice(0, idx).trim(), id: pair.slice(idx + 1).trim() };
   });
 
-// REVIEW_CHANNELS: bot shu kanal(lar)dagi yangi postlarni kuzatib,
-// avtomatik ravishda reklama materiali sifatida admin(lar)ga taklif qiladi.
-// Format: @username1,@username2  (bot shu kanallarga ham admin bo'lishi shart)
-const REVIEW_CHANNELS = (process.env.REVIEW_CHANNELS || '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
-
 if (!BOT_TOKEN) throw new Error('BOT_TOKEN topilmadi (.env yoki Railway Variables)');
-if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY topilmadi');
 if (CHANNELS.length === 0) throw new Error('CHANNELS topilmadi. Masalan: "Asosiy:@kanal1,Otzivlar:@kanal2"');
 if (ADMIN_IDS.length === 0) console.warn('OGOHLANTIRISH: ADMIN_IDS bo\'sh — hech kim botdan foydalana olmaydi.');
-if (REVIEW_CHANNELS.length === 0) console.warn('Eslatma: REVIEW_CHANNELS berilmagan — otziv kanallarini avtomatik kuzatish o\'chirilgan.');
 
 const bot = new Telegraf(BOT_TOKEN);
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// Har bir admin uchun oxirgi tayyorlangan post (tasdiqlashni kutyapti)
-// userId -> { text, photoFileId, selected: Set<number> (CHANNELS indexlari) }
-const pendingPosts = new Map();
+// ---------- Doimiy saqlanadigan postlar ----------
+let posts = loadPosts(); // [{ id, title, type, media: [file_id...], text, entities, createdAt }]
+function persist() {
+  savePosts(posts);
+}
 
-// Otziv kanalidan kelib, hali ishlatish/rad etish kutilayotgan materiallar
-// shortId -> { text, photoFileId, sourceLabel }
-const reviewStore = new Map();
-let reviewCounter = 0;
+// ---------- Vaqtinchalik holat (RAMda, admin boshiga bitta) ----------
+// creationState: adminId -> { step, type, title, media: [], editId? }
+const creationState = new Map();
+// sendState: adminId -> { postId, selected: Set<number> (CHANNELS indexlari) }
+const sendState = new Map();
 
 function isAdmin(ctx) {
   const id = String(ctx.from?.id || '');
   return ADMIN_IDS.includes(id);
 }
 
-function isReviewChannel(chat) {
-  const uname = chat.username ? chat.username.toLowerCase() : null;
-  const id = String(chat.id);
-  return REVIEW_CHANNELS.some((v) => {
-    const vv = v.replace(/^@/, '').toLowerCase();
-    return vv === uname || v === id;
-  });
-}
+const TYPE_LABELS = {
+  photo: '🖼 Rasm + matn',
+  video: '🎥 Video + matn',
+  album: '🖼🖼 Albom (rasmlar) + matn',
+  text: '📝 Faqat matn',
+};
 
-const SYSTEM_PROMPT = `Sen professional marketolog va copywriter'san. Vazifang — o'zbek tilidagi ta'lim kursi (Milliy Sertifikat, Attestatsiya, Ona tili va adabiyot tayyorgarligi) uchun Telegram kanalida e'lon qilinadigan reklama posti yozish.
-
-ENG MUHIM QOIDA — HECH QACHON BUZMA:
-- Senga berilgan matnda yo'q bo'lgan HECH QANDAY aniq raqam (necha o'rin qolgani, narx, muddat, foiz, statistika) yoki otziv/iqtibosni O'ZINGDAN TO'QIB CHIQARMA. Bu haqiqiy odamlarga ko'rsatiladigan reklama — yolg'on raqam yoki soxta otziv ishonchni butunlay yo'qotadi va aldov hisoblanadi.
-- Agar brief'da aniq raqam yoki otziv berilmagan bo'lsa, ularsiz, umumiy va ishonchli jalb qiluvchi matn yoz (masalan "o'rinlar soni cheklangan", "yuqori sifatli tayyorgarlik" kabi umumiy iboralarni ishlatsang bo'ladi, lekin aniq raqam ("10 ta", "98%", "120%") hech qachon o'ylab topilmasin).
-- Agar brief juda qisqa yoki noaniq bo'lsa (masalan faqat "otziv" yoki "reklama yoz" deyilgan, hech qanday kurs nomi, raqam yoki tafsilot berilmagan), to'liq post yozish o'rniga ADMIN'DAN qanday ma'lumot kerakligini so'ra — hech narsani o'zingdan to'qib post yozma. Bunday holatda "needs_clarification" maydonini true qil va "question" maydoniga aniqlashtiruvchi savolni yoz.
-- Agar otziv matni/skrinshoti berilgan bo'lsa, undagi ism yoki natijani o'zgartirmasdan, aynan o'sha holicha ishlat.
-
-JAVOBNI FAQAT quyidagi JSON formatida qaytar (boshqa hech narsa yozma):
-{
-  "needs_clarification": false,
-  "question": null,
-  "eyebrow": "juda qisqa kategoriya nomi, masalan \\"TA'LIM KURSI\\" yoki \\"ONA TILI VA ADABIYOT\\" (3-4 so'zdan oshmasin, katta-kichik harf farqi muhim emas)",
-  "headline": "qisqa, kuchli sarlavha — odatda kurs nomi (3-5 so'zdan oshmasin, haddan tashqari uzun bo'lmasin, rasm ustiga chiqadi)",
-  "highlight": "juda qisqa (2-6 so'z) urg'u/chaqiriq jumla — faqat berilgan aniq ma'lumot (muddat, sana) asosida, yoki umumiy ibora (masalan \\"Joylar soni cheklangan\\"); aniq raqam to'qima",
-  "body": "to'liq post matni, Telegram HTML teglar bilan (pastga qara) — bu asosiy caption bo'ladi"
-}
-
-Agar needs_clarification true bo'lsa, boshqa maydonlarni null qoldir, faqat "question" to'ldirilsin.
-
-"body" MAYDONI UCHUN FORMAT — Telegram HTML belgilaridan foydalan:
-- Faqat shu teglardan foydalanish mumkin: <b>...</b> (qalin), <i>...</i> (qiya/kursiv), <blockquote>...</blockquote> (iqtibos qutisi). Boshqa HTML teg ishlatma, markdown belgilarini (yulduzcha, pastki chiziq, uch marta qo'shtirnoq) hech qachon ishlatma — faqat shu HTML teglar. JSON ichida bo'lgani uchun qo'shtirnoq va orqa chiziqni to'g'ri escape qil.
-- Muhim raqam, foyda yoki chaqiriqni <b>...</b> bilan ajrat (masalan: <b>Faqat shu hafta!</b>).
-- Agar berilgan ma'lumotda haqiqiy otziv matni bo'lsa, uni <blockquote>...</blockquote> ichiga aynan o'sha holicha (o'zgartirmasdan) joylashtir.
-- Nozik urg'u yoki uslubiy jumla uchun <i>...</i> dan foydalanish mumkin (lekin me'yorida).
-- Afzalliklar ro'yxati uchun har bir qatorni "✓ " bilan boshla, har biri alohida qatorda.
-- "body" headline bilan takrorlanmasin — headline rasmda alohida chiqadi, body esa rasm ostidagi matn, shuning uchun sarlavhani qaytarma, to'g'ridan-to'g'ri mazmundan boshla.
-- Oxirida aniq chaqiriq-harakat bo'lsin — masalan savol bilan jalb qilib, "pastdagi tugma orqali yozing" kabi yo'naltirish.
-- Matn 2-7 ta qisqa paragraf/qatordan oshmasin.
-- Haddan tashqari emoji ishlatma — 2-4 tasi yetarli.
-- Faqat o'zbek tilida yoz (lotin alifbosida, admin boshqacha yozmasa).`;
-
-async function generatePost(userText) {
-  const completion = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: userText },
-    ],
-    temperature: 0.8,
-    response_format: { type: 'json_object' },
-  });
-  const raw = completion.choices[0].message.content.trim();
-  try {
-    return JSON.parse(raw);
-  } catch (e) {
-    // Agar model JSON bo'lmagan javob qaytarsa, oddiy matn sifatida ishlatamiz
-    return { needs_clarification: false, eyebrow: null, headline: null, highlight: null, body: raw };
-  }
-}
-
-function previewKeyboard(selected) {
-  const channelRows = CHANNELS.map((ch, i) => [
-    Markup.button.callback(
-      `${selected.has(i) ? '✅' : '⬜'} ${ch.label}`,
-      `toggle_ch_${i}`
-    ),
-  ]);
+// ---------- Klaviaturalar ----------
+function mainMenuKeyboard() {
   return Markup.inlineKeyboard([
-    ...channelRows,
-    [Markup.button.callback('📤 Tanlangan kanallarga joylash', 'post_approve')],
-    [Markup.button.callback('✏️ Qayta yoz', 'post_regenerate')],
-    [Markup.button.callback('❌ Bekor qilish', 'post_cancel')],
+    [Markup.button.callback('➕ Yangi post', 'new_post')],
+    [Markup.button.callback('📂 Postlarim', 'list_posts')],
   ]);
+}
+
+function typeSelectKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback(TYPE_LABELS.photo, 'type_photo')],
+    [Markup.button.callback(TYPE_LABELS.video, 'type_video')],
+    [Markup.button.callback(TYPE_LABELS.album, 'type_album')],
+    [Markup.button.callback(TYPE_LABELS.text, 'type_text')],
+    [Markup.button.callback('❌ Bekor qilish', 'cancel_creation')],
+  ]);
+}
+
+function postListKeyboard() {
+  const rows = posts.map((p) => [Markup.button.callback(`${TYPE_LABELS[p.type].split(' ')[0]} ${p.title}`, `view_${p.id}`)]);
+  rows.push([Markup.button.callback('🔙 Menyu', 'menu')]);
+  return Markup.inlineKeyboard(rows);
+}
+
+function postViewKeyboard(id) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('📤 Yuborish', `send_${id}`)],
+    [Markup.button.callback('✏️ Matnni tahrirlash', `edit_${id}`)],
+    [Markup.button.callback('🗑 O\'chirish', `delete_${id}`)],
+    [Markup.button.callback('🔙 Ro\'yxatga', 'list_posts')],
+  ]);
+}
+
+function deleteConfirmKeyboard(id) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('✅ Ha, o\'chirilsin', `delconfirm_${id}`)],
+    [Markup.button.callback('🔙 Yo\'q, bekor', `view_${id}`)],
+  ]);
+}
+
+function sendChannelKeyboard(selected) {
+  const rows = CHANNELS.map((ch, i) => [
+    Markup.button.callback(`${selected.has(i) ? '✅' : '⬜'} ${ch.label}`, `stoggle_${i}`),
+  ]);
+  rows.push([Markup.button.callback('📤 Tanlangan kanallarga yuborish', 'sconfirm')]);
+  rows.push([Markup.button.callback('❌ Bekor qilish', 'scancel')]);
+  return Markup.inlineKeyboard(rows);
 }
 
 function channelButtonKeyboard() {
@@ -136,214 +106,313 @@ function channelButtonKeyboard() {
   ]);
 }
 
-// ---------- Middleware: faqat adminlar (kanal postlari bundan mustasno) ----------
-bot.use((ctx, next) => {
-  if (ctx.updateType === 'channel_post' || ctx.updateType === 'edited_channel_post') {
-    // Bular pastda alohida, o'z kanal ro'yxati bilan tekshiriladi
-    return next();
-  }
-  if (!ctx.from) return;
-  if (!isAdmin(ctx)) {
-    // Admin bo'lmagan foydalanuvchilarga jim javob qaytarmaymiz
-    return;
-  }
-  return next();
-});
-
-// ---------- Otziv kanallarini kuzatish ----------
-bot.on('channel_post', async (ctx) => {
-  const post = ctx.channelPost;
-  const chat = post.chat;
-  if (!isReviewChannel(chat)) return; // faqat REVIEW_CHANNELS'dagi postlarga reaksiya
-
-  const text = post.text || post.caption || '';
-  const photoFileId = post.photo ? post.photo[post.photo.length - 1].file_id : null;
-  if (!text && !photoFileId) return;
-
-  const sourceLabel = chat.title || chat.username || 'Otziv kanali';
-  const id = String(++reviewCounter);
-  reviewStore.set(id, { text, photoFileId, sourceLabel });
-
-  const preview = text ? (text.length > 500 ? text.slice(0, 500) + '…' : text) : '(faqat rasm, matnsiz)';
-  const kb = Markup.inlineKeyboard([
-    [Markup.button.callback('✅ Shu asosda post yasash', `review_use_${id}`)],
-    [Markup.button.callback('❌ E\'tiborsiz qoldirish', `review_ignore_${id}`)],
-  ]);
-
-  for (const adminId of ADMIN_IDS) {
-    try {
-      if (photoFileId) {
-        await ctx.telegram.sendPhoto(adminId, photoFileId, {
-          caption: `🆕 Yangi otziv (${sourceLabel}):\n\n${preview}`,
-          ...kb,
-        });
-      } else {
-        await ctx.telegram.sendMessage(adminId, `🆕 Yangi otziv (${sourceLabel}):\n\n${preview}`, kb);
-      }
-    } catch (err) {
-      console.error('Adminga otziv yuborishda xato:', err);
-    }
-  }
-});
-
-bot.action(/review_use_(\S+)/, async (ctx) => {
-  const id = ctx.match[1];
-  const review = reviewStore.get(id);
-  if (!review) {
-    return ctx.answerCbQuery('Bu material eskirgan yoki allaqachon ishlatilgan.', { show_alert: true });
-  }
-  await ctx.answerCbQuery('Post tayyorlanmoqda...');
-  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  const briefText = review.text
-    ? `Quyidagi otziv/natijaga asoslanib reklama posti yoz:\n\n${review.text}`
-    : "Ilova qilingan otziv/natija skrinshotiga asoslanib reklama posti yozib ber.";
-  await handleBrief(ctx, briefText, review.photoFileId);
-  reviewStore.delete(id);
-});
-
-bot.action(/review_ignore_(\S+)/, async (ctx) => {
-  const id = ctx.match[1];
-  reviewStore.delete(id);
-  await ctx.answerCbQuery('E\'tiborsiz qoldirildi.');
-  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-});
-
-bot.start((ctx) => {
-  const list = CHANNELS.map((c) => `• ${c.label}`).join('\n');
-  ctx.reply(
-    `Salom! Menga reklama qilinadigan kurs haqida qisqa ma'lumot yozing (kurs nomi, necha o'rin qolgani, otziv bo'lsa — matnini ham qo'shing yoki skrinshot rasm bilan birga yuboring).\n\nMen shu asosda tayyor reklama posti yozib, avval sizga ko'rsataman. Keyin qaysi kanal(lar)ga joylashni o'zingiz tanlaysiz:\n${list}`
-  );
-});
-
-// Matn xabar — brief sifatida qabul qilinadi
-bot.on('text', async (ctx) => {
-  if (ctx.message.text.startsWith('/')) return;
-  await handleBrief(ctx, ctx.message.text, null);
-});
-
-// Rasm (otziv skrinshoti) + caption
-bot.on('photo', async (ctx) => {
-  const caption = ctx.message.caption || "Ilova qilingan skrinshot/otzivga asoslanib reklama posti yozib ber.";
-  const photoFileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-  await handleBrief(ctx, caption, photoFileId);
-});
-
-async function handleBrief(ctx, briefText, photoFileId) {
-  const waitMsg = await ctx.reply('✍️ Post tayyorlanmoqda...');
-  try {
-    const result = await generatePost(briefText);
-
-    if (result.needs_clarification) {
-      await ctx.reply('🤔 ' + (result.question || "Iltimos, ko'proq tafsilot bering (kurs nomi, muddat, o'rin soni va h.k.)."));
-      return;
-    }
-
-    const body = result.body || '';
-    // Standart holatda HECH BIR kanal tanlanmagan — xato kanalga tasodifan
-    // yuborib qo'ymaslik uchun, kerakli kanal(lar)ni o'zingiz bosib tanlaysiz.
-    const selected = new Set();
-
-    let imageBuffer = null;
-    if (!photoFileId && result.headline) {
-      // Haqiqiy skrinshot berilmagan bo'lsa, rangli grafik sarlavha yasaymiz.
-      try {
-        imageBuffer = generateHeadlineImage({
-          headline: result.headline,
-          highlight: result.highlight,
-          eyebrow: result.eyebrow,
-        });
-      } catch (imgErr) {
-        console.error('Rasm yasashda xato:', imgErr);
-      }
-    }
-
-    pendingPosts.set(ctx.from.id, { text: body, photoFileId, imageBuffer, selected });
-
-    if (photoFileId) {
-      await ctx.replyWithPhoto(photoFileId, {
-        caption: body,
-        parse_mode: 'HTML',
-        ...previewKeyboard(selected),
-      });
-    } else if (imageBuffer) {
-      await ctx.replyWithPhoto(
-        { source: imageBuffer },
-        { caption: body, parse_mode: 'HTML', ...previewKeyboard(selected) }
-      );
+// ---------- Postni yuborish (preview yoki kanalga) ----------
+async function sendDraftContent(telegram, chatId, draft, extra) {
+  if (draft.media && draft.media.length >= 2) {
+    await telegram.sendMediaGroup(
+      chatId,
+      draft.media.map((id) => ({ type: draft.type === 'video' ? 'video' : 'photo', media: id }))
+    );
+  } else if (draft.media && draft.media.length === 1) {
+    if (draft.type === 'video') {
+      await telegram.sendVideo(chatId, draft.media[0]);
     } else {
-      await ctx.reply(body, { parse_mode: 'HTML', ...previewKeyboard(selected) });
+      await telegram.sendPhoto(chatId, draft.media[0]);
     }
-  } catch (err) {
-    console.error(err);
-    await ctx.reply('❌ Xatolik yuz berdi: ' + (err.message || 'noma\'lum xato'));
-  } finally {
-    await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
+  }
+  if (draft.text) {
+    await telegram.sendMessage(chatId, draft.text, {
+      entities: draft.entities && draft.entities.length ? draft.entities : undefined,
+      ...extra,
+    });
   }
 }
 
-bot.action(/toggle_ch_(\d+)/, async (ctx) => {
-  const pending = pendingPosts.get(ctx.from.id);
-  if (!pending) {
-    return ctx.answerCbQuery('Tayyor post topilmadi. Avval yangi brief yuboring.');
-  }
-  const i = Number(ctx.match[1]);
-  if (pending.selected.has(i)) {
-    pending.selected.delete(i);
-  } else {
-    pending.selected.add(i);
-  }
-  await ctx.answerCbQuery();
-  await ctx.editMessageReplyMarkup(previewKeyboard(pending.selected).reply_markup).catch(() => {});
+// ---------- Middleware: faqat adminlar ----------
+bot.use((ctx, next) => {
+  if (!ctx.from) return;
+  if (!isAdmin(ctx)) return; // admin bo'lmaganlarga jim javob qaytarmaymiz
+  return next();
 });
 
-bot.action('post_approve', async (ctx) => {
-  const pending = pendingPosts.get(ctx.from.id);
-  if (!pending) {
-    return ctx.answerCbQuery('Tayyor post topilmadi. Avval yangi brief yuboring.');
+bot.start((ctx) => {
+  creationState.delete(ctx.from.id);
+  sendState.delete(ctx.from.id);
+  ctx.reply(
+    "Salom! Men siz tayyorlagan postlarni (rasm/video/albom + matn) saqlab, kerak paytida kerakli kanal(lar)ga yuboraman.\n\nQuyidagidan tanlang:",
+    mainMenuKeyboard()
+  );
+});
+
+bot.command('bekor', (ctx) => {
+  creationState.delete(ctx.from.id);
+  sendState.delete(ctx.from.id);
+  ctx.reply('Bekor qilindi.', mainMenuKeyboard());
+});
+
+bot.action('menu', async (ctx) => {
+  creationState.delete(ctx.from.id);
+  sendState.delete(ctx.from.id);
+  await ctx.answerCbQuery();
+  await ctx.reply('Bosh menyu:', mainMenuKeyboard());
+});
+
+// ---------- Yangi post yaratish ----------
+bot.action('new_post', async (ctx) => {
+  creationState.set(ctx.from.id, { step: 'type' });
+  await ctx.answerCbQuery();
+  await ctx.reply('Post turini tanlang:', typeSelectKeyboard());
+});
+
+bot.action('cancel_creation', async (ctx) => {
+  creationState.delete(ctx.from.id);
+  await ctx.answerCbQuery('Bekor qilindi.');
+  await ctx.reply('Bosh menyu:', mainMenuKeyboard());
+});
+
+bot.action(/type_(photo|video|album|text)/, async (ctx) => {
+  const type = ctx.match[1];
+  creationState.set(ctx.from.id, { step: 'title', type, media: [] });
+  await ctx.answerCbQuery();
+  await ctx.reply("Post uchun nom bering (faqat o'zingiz uchun ro'yxatda ko'rinadi, kanalga chiqmaydi):");
+});
+
+// ---------- Postlar ro'yxati ----------
+bot.action('list_posts', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (posts.length === 0) {
+    await ctx.reply("Hali hech qanday post saqlanmagan. \"➕ Yangi post\" orqali qo'shing.", mainMenuKeyboard());
+    return;
   }
-  if (pending.selected.size === 0) {
+  await ctx.reply(`Saqlangan postlar (${posts.length} ta):`, postListKeyboard());
+});
+
+bot.action(/view_(\S+)/, async (ctx) => {
+  const id = ctx.match[1];
+  const draft = posts.find((p) => p.id === id);
+  await ctx.answerCbQuery();
+  if (!draft) {
+    return ctx.reply('Bu post topilmadi (o\'chirilgan bo\'lishi mumkin).', mainMenuKeyboard());
+  }
+  await ctx.reply(`👁 Ko'rinish — ${TYPE_LABELS[draft.type]}\n«${draft.title}»`);
+  try {
+    await sendDraftContent(ctx.telegram, ctx.chat.id, draft, channelButtonKeyboard());
+  } catch (err) {
+    console.error('Preview xatosi:', err);
+    await ctx.reply('⚠️ Ko\'rsatishda xato: ' + (err.message || ''));
+  }
+  await ctx.reply('Amal tanlang:', postViewKeyboard(id));
+});
+
+bot.action(/delete_(\S+)/, async (ctx) => {
+  const id = ctx.match[1];
+  const draft = posts.find((p) => p.id === id);
+  await ctx.answerCbQuery();
+  if (!draft) return ctx.reply('Topilmadi.', mainMenuKeyboard());
+  await ctx.reply(`Rostdan ham o'chirilsinmi?\n«${draft.title}»`, deleteConfirmKeyboard(id));
+});
+
+bot.action(/delconfirm_(\S+)/, async (ctx) => {
+  const id = ctx.match[1];
+  posts = posts.filter((p) => p.id !== id);
+  persist();
+  await ctx.answerCbQuery('O\'chirildi.');
+  await ctx.reply('🗑 Post o\'chirildi.', mainMenuKeyboard());
+});
+
+// ---------- Matnni tahrirlash ----------
+bot.action(/edit_(\S+)/, async (ctx) => {
+  const id = ctx.match[1];
+  const draft = posts.find((p) => p.id === id);
+  await ctx.answerCbQuery();
+  if (!draft) return ctx.reply('Topilmadi.', mainMenuKeyboard());
+  creationState.set(ctx.from.id, { step: 'edit_caption', editId: id });
+  await ctx.reply("Yangi matnni yuboring (eskisi butunlay almashtiriladi):");
+});
+
+// ---------- Postni kanal(lar)ga yuborish ----------
+bot.action(/send_(\S+)/, async (ctx) => {
+  const id = ctx.match[1];
+  const draft = posts.find((p) => p.id === id);
+  await ctx.answerCbQuery();
+  if (!draft) return ctx.reply('Topilmadi.', mainMenuKeyboard());
+  const selected = new Set();
+  sendState.set(ctx.from.id, { postId: id, selected });
+  await ctx.reply(`«${draft.title}» — qaysi kanal(lar)ga yuboramiz?`, sendChannelKeyboard(selected));
+});
+
+bot.action(/stoggle_(\d+)/, async (ctx) => {
+  const st = sendState.get(ctx.from.id);
+  if (!st) return ctx.answerCbQuery('Avval postni tanlang.');
+  const i = Number(ctx.match[1]);
+  if (st.selected.has(i)) st.selected.delete(i);
+  else st.selected.add(i);
+  await ctx.answerCbQuery();
+  await ctx.editMessageReplyMarkup(sendChannelKeyboard(st.selected).reply_markup).catch(() => {});
+});
+
+bot.action('scancel', async (ctx) => {
+  sendState.delete(ctx.from.id);
+  await ctx.answerCbQuery('Bekor qilindi.');
+  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+});
+
+bot.action('sconfirm', async (ctx) => {
+  const st = sendState.get(ctx.from.id);
+  if (!st) return ctx.answerCbQuery('Avval postni tanlang.');
+  if (st.selected.size === 0) {
     return ctx.answerCbQuery('Kamida bitta kanal tanlang.', { show_alert: true });
   }
-  const targets = CHANNELS.filter((_, i) => pending.selected.has(i));
+  const draft = posts.find((p) => p.id === st.postId);
+  if (!draft) {
+    sendState.delete(ctx.from.id);
+    return ctx.reply('Bu post endi mavjud emas.', mainMenuKeyboard());
+  }
+  await ctx.answerCbQuery('Yuborilmoqda...');
+  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+  const targets = CHANNELS.filter((_, i) => st.selected.has(i));
   const results = [];
   for (const ch of targets) {
     try {
-      if (pending.photoFileId) {
-        await ctx.telegram.sendPhoto(ch.id, pending.photoFileId, {
-          caption: pending.text,
-          parse_mode: 'HTML',
-          ...channelButtonKeyboard(),
-        });
-      } else if (pending.imageBuffer) {
-        await ctx.telegram.sendPhoto(ch.id, { source: pending.imageBuffer }, {
-          caption: pending.text,
-          parse_mode: 'HTML',
-          ...channelButtonKeyboard(),
-        });
-      } else {
-        await ctx.telegram.sendMessage(ch.id, pending.text, { parse_mode: 'HTML', ...channelButtonKeyboard() });
-      }
+      await sendDraftContent(ctx.telegram, ch.id, draft, channelButtonKeyboard());
       results.push(`✅ ${ch.label}`);
     } catch (err) {
-      console.error(`${ch.label} ga joylashda xato:`, err);
+      console.error(`${ch.label} ga yuborishda xato:`, err);
       results.push(`❌ ${ch.label}: ${err.message || 'xato'}`);
     }
   }
-  pendingPosts.delete(ctx.from.id);
-  await ctx.answerCbQuery('Joylandi!');
-  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  await ctx.reply(results.join('\n'));
+  sendState.delete(ctx.from.id);
+  await ctx.reply(results.join('\n'), mainMenuKeyboard());
 });
 
-bot.action('post_regenerate', async (ctx) => {
-  await ctx.answerCbQuery('Qayta yozilmoqda...');
-  await ctx.reply("Postni qanday o'zgartiray? (masalan: \"qisqaroq qil\", \"yana otziv qo'sh\", yoki yangi brief yozing)");
+// ---------- Matn xabarlar: oqim bosqichiga qarab yo'naltiriladi ----------
+bot.on('text', async (ctx) => {
+  const text = ctx.message.text;
+  if (text.startsWith('/')) return; // buyruqlar alohida ishlanadi
+
+  const state = creationState.get(ctx.from.id);
+  if (!state) {
+    await ctx.reply("Menyudan foydalaning:", mainMenuKeyboard());
+    return;
+  }
+
+  if (state.step === 'title') {
+    state.title = text.trim().slice(0, 100) || 'Nomsiz post';
+    if (state.type === 'text') {
+      state.step = 'caption';
+      await ctx.reply('Endi post matnini yuboring:');
+    } else if (state.type === 'album') {
+      state.step = 'album_media';
+      await ctx.reply(
+        "Rasmlarni birma-bir yuboring (10 tagacha). Tugatgach /tayyor deb yozing."
+      );
+    } else {
+      state.step = 'media';
+      await ctx.reply(state.type === 'video' ? 'Videoni yuboring:' : 'Rasmni yuboring:');
+    }
+    return;
+  }
+
+  if (state.step === 'album_media' && text.trim() === '/tayyor') {
+    if (!state.media || state.media.length === 0) {
+      await ctx.reply("Hali birorta rasm yubormadingiz. Avval kamida bitta rasm yuboring.");
+      return;
+    }
+    state.step = 'caption';
+    await ctx.reply(`✅ ${state.media.length} ta rasm qabul qilindi. Endi post matnini yuboring:`);
+    return;
+  }
+
+  if (state.step === 'caption') {
+    const draft = {
+      id: genId(),
+      title: state.title,
+      type: state.type,
+      media: state.media || [],
+      text,
+      entities: ctx.message.entities || [],
+      createdAt: new Date().toISOString(),
+    };
+    posts.push(draft);
+    persist();
+    creationState.delete(ctx.from.id);
+    await ctx.reply(`✅ Post saqlandi: «${draft.title}»`);
+    try {
+      await sendDraftContent(ctx.telegram, ctx.chat.id, draft, channelButtonKeyboard());
+    } catch (err) {
+      console.error('Preview xatosi:', err);
+    }
+    await ctx.reply('Bosh menyu:', mainMenuKeyboard());
+    return;
+  }
+
+  if (state.step === 'edit_caption') {
+    const draft = posts.find((p) => p.id === state.editId);
+    creationState.delete(ctx.from.id);
+    if (!draft) {
+      await ctx.reply('Bu post endi mavjud emas.', mainMenuKeyboard());
+      return;
+    }
+    draft.text = text;
+    draft.entities = ctx.message.entities || [];
+    persist();
+    await ctx.reply(`✅ Matn yangilandi: «${draft.title}»`, mainMenuKeyboard());
+    return;
+  }
+
+  // Boshqa holatda (masalan 'media' bosqichida matn yuborilsa)
+  await ctx.reply("Hozir matn emas, media kutilmoqda. Bekor qilish uchun /bekor yozing.");
 });
 
-bot.action('post_cancel', async (ctx) => {
-  pendingPosts.delete(ctx.from.id);
-  await ctx.answerCbQuery('Bekor qilindi.');
-  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+// ---------- Rasm xabarlar ----------
+bot.on('photo', async (ctx) => {
+  const state = creationState.get(ctx.from.id);
+  const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+
+  if (!state) {
+    await ctx.reply("Bu rasmni qayerga ishlatishni bilmayapman. Avval \"➕ Yangi post\" orqali boshlang.", mainMenuKeyboard());
+    return;
+  }
+
+  if (state.step === 'media' && state.type === 'photo') {
+    state.media = [fileId];
+    state.step = 'caption';
+    await ctx.reply('✅ Rasm qabul qilindi. Endi post matnini yuboring:');
+    return;
+  }
+
+  if (state.step === 'album_media') {
+    state.media = state.media || [];
+    if (state.media.length >= 10) {
+      await ctx.reply("Maksimal 10 ta rasm. /tayyor deb yozing.");
+      return;
+    }
+    state.media.push(fileId);
+    await ctx.reply(`✅ Qo'shildi (${state.media.length}/10). Yana rasm yuboring yoki /tayyor deb tugating.`);
+    return;
+  }
+
+  await ctx.reply("Hozir rasm kutilmayapti. Bekor qilish uchun /bekor yozing.");
+});
+
+// ---------- Video xabarlar ----------
+bot.on('video', async (ctx) => {
+  const state = creationState.get(ctx.from.id);
+  const fileId = ctx.message.video.file_id;
+
+  if (!state) {
+    await ctx.reply("Bu videoni qayerga ishlatishni bilmayapman. Avval \"➕ Yangi post\" orqali boshlang.", mainMenuKeyboard());
+    return;
+  }
+
+  if (state.step === 'media' && state.type === 'video') {
+    state.media = [fileId];
+    state.step = 'caption';
+    await ctx.reply('✅ Video qabul qilindi. Endi post matnini yuboring:');
+    return;
+  }
+
+  await ctx.reply("Hozir video kutilmayapti. Bekor qilish uchun /bekor yozing.");
 });
 
 bot.catch((err, ctx) => {
@@ -351,7 +420,7 @@ bot.catch((err, ctx) => {
 });
 
 bot.launch().then(() => {
-  console.log('Marketolog bot ishga tushdi.');
+  console.log('Marketolog bot (postlar kutubxonasi) ishga tushdi.');
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));

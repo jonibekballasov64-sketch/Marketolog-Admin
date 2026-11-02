@@ -1,17 +1,14 @@
 {
   "name": "marketolog-bot",
-  "version": "1.0.0",
-  "description": "Telegram bot that turns raw course info/reviews into professional Uzbek marketing posts and publishes them to a channel.",
+  "version": "2.0.0",
+  "description": "Telegram bot: saqlangan postlar kutubxonasi (rasm/video/albom + matn) va ularni tanlangan kanal(lar)ga yuborish.",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@fontsource/inter": "^5.3.0",
-    "@napi-rs/canvas": "^1.1.0",
     "dotenv": "^16.4.5",
-    "openai": "^4.68.0",
     "telegraf": "^4.16.3"
   },
   "engines": {
