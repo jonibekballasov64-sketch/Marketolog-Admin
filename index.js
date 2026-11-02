@@ -107,21 +107,46 @@ function channelButtonKeyboard() {
 }
 
 // ---------- Postni yuborish (preview yoki kanalga) ----------
+// Telegram'da caption (rasm/video ostidagi matn) uzunligi 1024 belgidan oshmasligi kerak.
+const CAPTION_LIMIT = 1024;
+
 async function sendDraftContent(telegram, chatId, draft, extra) {
-  if (draft.media && draft.media.length >= 2) {
+  const text = draft.text || '';
+  const media = draft.media || [];
+  const singleMedia = media.length === 1;
+  const multiMedia = media.length >= 2;
+  const fitsAsCaption = text && text.length <= CAPTION_LIMIT;
+
+  // Bitta rasm/video + qisqa matn — hammasi BITTA xabarda, tugma ham shu post ichida chiqadi.
+  if (singleMedia && fitsAsCaption) {
+    const opts = {
+      caption: text,
+      caption_entities: draft.entities && draft.entities.length ? draft.entities : undefined,
+      ...extra,
+    };
+    if (draft.type === 'video') {
+      await telegram.sendVideo(chatId, media[0], opts);
+    } else {
+      await telegram.sendPhoto(chatId, media[0], opts);
+    }
+    return;
+  }
+
+  // Aks holda (albom, yoki matn juda uzun bo'lsa): media alohida, matn+tugma alohida xabarda.
+  if (multiMedia) {
     await telegram.sendMediaGroup(
       chatId,
-      draft.media.map((id) => ({ type: draft.type === 'video' ? 'video' : 'photo', media: id }))
+      media.map((id) => ({ type: draft.type === 'video' ? 'video' : 'photo', media: id }))
     );
-  } else if (draft.media && draft.media.length === 1) {
+  } else if (singleMedia) {
     if (draft.type === 'video') {
-      await telegram.sendVideo(chatId, draft.media[0]);
+      await telegram.sendVideo(chatId, media[0]);
     } else {
-      await telegram.sendPhoto(chatId, draft.media[0]);
+      await telegram.sendPhoto(chatId, media[0]);
     }
   }
-  if (draft.text) {
-    await telegram.sendMessage(chatId, draft.text, {
+  if (text) {
+    await telegram.sendMessage(chatId, text, {
       entities: draft.entities && draft.entities.length ? draft.entities : undefined,
       ...extra,
     });
