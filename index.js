@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const OpenAI = require('openai');
+const { generateHeadlineImage } = require('./graphic');
 
 // ---------- Env ----------
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -68,20 +69,31 @@ const SYSTEM_PROMPT = `Sen professional marketolog va copywriter'san. Vazifang �
 ENG MUHIM QOIDA — HECH QACHON BUZMA:
 - Senga berilgan matnda yo'q bo'lgan HECH QANDAY aniq raqam (necha o'rin qolgani, narx, muddat, foiz, statistika) yoki otziv/iqtibosni O'ZINGDAN TO'QIB CHIQARMA. Bu haqiqiy odamlarga ko'rsatiladigan reklama — yolg'on raqam yoki soxta otziv ishonchni butunlay yo'qotadi va aldov hisoblanadi.
 - Agar brief'da aniq raqam yoki otziv berilmagan bo'lsa, ularsiz, umumiy va ishonchli jalb qiluvchi matn yoz (masalan "o'rinlar soni cheklangan", "yuqori sifatli tayyorgarlik" kabi umumiy iboralarni ishlatsang bo'ladi, lekin aniq raqam ("10 ta", "98%", "120%") hech qachon o'ylab topilmasin).
-- Agar brief juda qisqa yoki noaniq bo'lsa (masalan faqat "otziv" yoki "reklama yoz" deyilgan, hech qanday kurs nomi, raqam yoki tafsilot berilmagan), to'liq post yozish o'rniga ADMIN'DAN qanday ma'lumot kerakligini so'ra (kurs nomi, necha o'rin qolgani, muddat, narx va h.k.) — hech narsani o'zingdan to'qib post yozma.
+- Agar brief juda qisqa yoki noaniq bo'lsa (masalan faqat "otziv" yoki "reklama yoz" deyilgan, hech qanday kurs nomi, raqam yoki tafsilot berilmagan), to'liq post yozish o'rniga ADMIN'DAN qanday ma'lumot kerakligini so'ra — hech narsani o'zingdan to'qib post yozma. Bunday holatda "needs_clarification" maydonini true qil va "question" maydoniga aniqlashtiruvchi savolni yoz.
 - Agar otziv matni/skrinshoti berilgan bo'lsa, undagi ism yoki natijani o'zgartirmasdan, aynan o'sha holicha ishlat.
 
-FORMAT — Telegram HTML belgilaridan foydalan:
-- Faqat shu teglardan foydalanish mumkin: <b>...</b> (qalin), <i>...</i> (qiya/kursiv), <blockquote>...</blockquote> (iqtibos qutisi). Boshqa HTML teg ishlatma, markdown belgilarini (yulduzcha **, pastki chiziq __, uch marta qo'shtirnoq) hech qachon ishlatma — faqat shu HTML teglar.
+JAVOBNI FAQAT quyidagi JSON formatida qaytar (boshqa hech narsa yozma):
+{
+  "needs_clarification": false,
+  "question": null,
+  "eyebrow": "juda qisqa kategoriya nomi, masalan \\"TA'LIM KURSI\\" yoki \\"ONA TILI VA ADABIYOT\\" (3-4 so'zdan oshmasin, katta-kichik harf farqi muhim emas)",
+  "headline": "qisqa, kuchli sarlavha — odatda kurs nomi (3-5 so'zdan oshmasin, haddan tashqari uzun bo'lmasin, rasm ustiga chiqadi)",
+  "highlight": "juda qisqa (2-6 so'z) urg'u/chaqiriq jumla — faqat berilgan aniq ma'lumot (muddat, sana) asosida, yoki umumiy ibora (masalan \\"Joylar soni cheklangan\\"); aniq raqam to'qima",
+  "body": "to'liq post matni, Telegram HTML teglar bilan (pastga qara) — bu asosiy caption bo'ladi"
+}
+
+Agar needs_clarification true bo'lsa, boshqa maydonlarni null qoldir, faqat "question" to'ldirilsin.
+
+"body" MAYDONI UCHUN FORMAT — Telegram HTML belgilaridan foydalan:
+- Faqat shu teglardan foydalanish mumkin: <b>...</b> (qalin), <i>...</i> (qiya/kursiv), <blockquote>...</blockquote> (iqtibos qutisi). Boshqa HTML teg ishlatma, markdown belgilarini (yulduzcha, pastki chiziq, uch marta qo'shtirnoq) hech qachon ishlatma — faqat shu HTML teglar. JSON ichida bo'lgani uchun qo'shtirnoq va orqa chiziqni to'g'ri escape qil.
 - Muhim raqam, foyda yoki chaqiriqni <b>...</b> bilan ajrat (masalan: <b>Faqat shu hafta!</b>).
-- Agar berilgan ma'lumotda haqiqiy otziv matni bo'lsa, uni <blockquote>...</blockquote> ichiga aynan o'sha holicha (o'zgartirmasdan) joylashtir — bu iqtibos sifatida alohida ajralib turadi.
-- Nozik urg'u yoki uslubiy jumla uchun <i>...</i> dan foydalanish mumkin (lekin me'yorida, haddan tashqari ko'p emas).
-- Afzalliklar ro'yxati uchun har bir qatorni "✓ " bilan boshla (checkmark + bo'sh joy), har biri alohida qatorda.
-- Matn boshida diqqatni tortadigan sarlavha/birinchi qator bo'lsin.
-- Agar berilgan ma'lumotda otziv/natija bo'lsa, qisqa iqtibos sifatida tabiiy kiritib ber (faqat berilgan otzivni, o'zingnikini emas).
-- Oxirida aniq chaqiriq-harakat (call to action) bo'lsin — masalan savol bilan jalb qilib, keyin "pastdagi tugma orqali yozing" kabi yo'naltirish.
-- Matn 2-7 ta qisqa paragraf/qatordan oshmasin, Telegram posti uchun mos uzunlikda bo'lsin.
-- Haddan tashqari emoji ishlatma — 2-4 tasi yetarli, joyida ishlatilsin.
+- Agar berilgan ma'lumotda haqiqiy otziv matni bo'lsa, uni <blockquote>...</blockquote> ichiga aynan o'sha holicha (o'zgartirmasdan) joylashtir.
+- Nozik urg'u yoki uslubiy jumla uchun <i>...</i> dan foydalanish mumkin (lekin me'yorida).
+- Afzalliklar ro'yxati uchun har bir qatorni "✓ " bilan boshla, har biri alohida qatorda.
+- "body" headline bilan takrorlanmasin — headline rasmda alohida chiqadi, body esa rasm ostidagi matn, shuning uchun sarlavhani qaytarma, to'g'ridan-to'g'ri mazmundan boshla.
+- Oxirida aniq chaqiriq-harakat bo'lsin — masalan savol bilan jalb qilib, "pastdagi tugma orqali yozing" kabi yo'naltirish.
+- Matn 2-7 ta qisqa paragraf/qatordan oshmasin.
+- Haddan tashqari emoji ishlatma — 2-4 tasi yetarli.
 - Faqat o'zbek tilida yoz (lotin alifbosida, admin boshqacha yozmasa).`;
 
 async function generatePost(userText) {
@@ -92,8 +104,15 @@ async function generatePost(userText) {
       { role: 'user', content: userText },
     ],
     temperature: 0.8,
+    response_format: { type: 'json_object' },
   });
-  return completion.choices[0].message.content.trim();
+  const raw = completion.choices[0].message.content.trim();
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    // Agar model JSON bo'lmagan javob qaytarsa, oddiy matn sifatida ishlatamiz
+    return { needs_clarification: false, eyebrow: null, headline: null, highlight: null, body: raw };
+  }
 }
 
 function previewKeyboard(selected) {
@@ -212,20 +231,47 @@ bot.on('photo', async (ctx) => {
 async function handleBrief(ctx, briefText, photoFileId) {
   const waitMsg = await ctx.reply('✍️ Post tayyorlanmoqda...');
   try {
-    const generated = await generatePost(briefText);
+    const result = await generatePost(briefText);
+
+    if (result.needs_clarification) {
+      await ctx.reply('🤔 ' + (result.question || "Iltimos, ko'proq tafsilot bering (kurs nomi, muddat, o'rin soni va h.k.)."));
+      return;
+    }
+
+    const body = result.body || '';
     // Standart holatda HECH BIR kanal tanlanmagan — xato kanalga tasodifan
     // yuborib qo'ymaslik uchun, kerakli kanal(lar)ni o'zingiz bosib tanlaysiz.
     const selected = new Set();
-    pendingPosts.set(ctx.from.id, { text: generated, photoFileId, selected });
+
+    let imageBuffer = null;
+    if (!photoFileId && result.headline) {
+      // Haqiqiy skrinshot berilmagan bo'lsa, rangli grafik sarlavha yasaymiz.
+      try {
+        imageBuffer = generateHeadlineImage({
+          headline: result.headline,
+          highlight: result.highlight,
+          eyebrow: result.eyebrow,
+        });
+      } catch (imgErr) {
+        console.error('Rasm yasashda xato:', imgErr);
+      }
+    }
+
+    pendingPosts.set(ctx.from.id, { text: body, photoFileId, imageBuffer, selected });
 
     if (photoFileId) {
       await ctx.replyWithPhoto(photoFileId, {
-        caption: generated,
+        caption: body,
         parse_mode: 'HTML',
         ...previewKeyboard(selected),
       });
+    } else if (imageBuffer) {
+      await ctx.replyWithPhoto(
+        { source: imageBuffer },
+        { caption: body, parse_mode: 'HTML', ...previewKeyboard(selected) }
+      );
     } else {
-      await ctx.reply(generated, { parse_mode: 'HTML', ...previewKeyboard(selected) });
+      await ctx.reply(body, { parse_mode: 'HTML', ...previewKeyboard(selected) });
     }
   } catch (err) {
     console.error(err);
@@ -264,6 +310,12 @@ bot.action('post_approve', async (ctx) => {
     try {
       if (pending.photoFileId) {
         await ctx.telegram.sendPhoto(ch.id, pending.photoFileId, {
+          caption: pending.text,
+          parse_mode: 'HTML',
+          ...channelButtonKeyboard(),
+        });
+      } else if (pending.imageBuffer) {
+        await ctx.telegram.sendPhoto(ch.id, { source: pending.imageBuffer }, {
           caption: pending.text,
           parse_mode: 'HTML',
           ...channelButtonKeyboard(),
